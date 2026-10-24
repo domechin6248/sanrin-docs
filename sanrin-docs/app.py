@@ -64,6 +64,35 @@ def _add_parcels(rows: list[dict]) -> None:
     st.session_state.editor_version += 1
 
 
+def _fill_address_from_postal() -> None:
+    """郵便番号から住所（町名まで）を調べて、ご住所の欄に入れる。"""
+    code = "".join(ch for ch in st.session_state.get("postal", "") if ch.isdigit())
+    code = code.translate(str.maketrans("０１２３４５６７８９", "0123456789"))
+    st.session_state.postal_message = ""
+    if len(code) != 7:
+        if code:
+            st.session_state.postal_message = "郵便番号は7桁で入力してください。"
+        return
+    st.session_state.postal = f"{code[:3]}-{code[3:]}"
+    found = address.lookup_postal(code)
+    if not found:
+        st.session_state.postal_message = "この郵便番号の住所が見つかりませんでした。直接入力してください。"
+        return
+    current = st.session_state.get("customer_address", "").strip()
+    previous = st.session_state.get("postal_autofill", "")
+    # まだ空欄か、前回自動で入れたままの場合だけ上書きする（書き足した番地は消さない）
+    if not current or current == previous:
+        st.session_state.customer_address = found[0]
+        st.session_state.postal_autofill = found[0]
+        st.session_state.postal_message = (
+            "住所を自動で入れました。番地などを書き足してください。"
+            if len(found) == 1 else
+            f"候補が{len(found)}件あります（{'／'.join(found)}）。最初の候補を入れました。"
+        )
+    else:
+        st.session_state.postal_message = f"郵便番号の住所：{'／'.join(found)}（入力済みのご住所はそのままにしています）"
+
+
 # ─────────────────────────────── 画面 ───────────────────────────────
 st.title("📄 山林お引き取り 書類作成ツール")
 st.write("お客様情報・金額・土地を入力すると、各書類を差し込み済みの Word ファイルで作成します。")
@@ -84,8 +113,16 @@ c1, c2 = st.columns(2)
 name = c1.text_input("お名前 *", placeholder="山田 太郎")
 furigana = c2.text_input("フリガナ", placeholder="ヤマダ タロウ")
 c1, c2 = st.columns([1, 2])
-postal = c1.text_input("郵便番号", placeholder="895-0076")
-customer_address = c2.text_input("ご住所", placeholder="鹿児島県〇〇市〇〇町1丁目2番3号")
+postal = c1.text_input(
+    "郵便番号", placeholder="895-0076", key="postal", on_change=_fill_address_from_postal,
+    help="7桁を入れてEnterを押すと、ご住所の欄に町名まで自動で入ります。",
+)
+customer_address = c2.text_input(
+    "ご住所", placeholder="鹿児島県〇〇市〇〇町1丁目2番3号", key="customer_address",
+    help="郵便番号から入った町名の後ろに、番地などを書き足してください。",
+)
+if st.session_state.get("postal_message"):
+    c2.caption(st.session_state.postal_message)
 c1, c2 = st.columns(2)
 phone = c1.text_input("電話番号", placeholder="090-1234-5678")
 email = c2.text_input("メールアドレス", placeholder="example@mail.com")

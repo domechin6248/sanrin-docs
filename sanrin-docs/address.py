@@ -176,3 +176,20 @@ def label(name: str, readings: dict[str, str]) -> str:
     if not reading or reading == to_hiragana(name):
         return name
     return f"{name}（{reading}）"
+
+
+ZIPCLOUD_URL = "https://zipcloud.ibsnet.co.jp/api/search"
+
+
+@st.cache_data(show_spinner=False, ttl=60 * 60 * 24 * 7)
+def lookup_postal(code: str) -> list[str]:
+    """郵便番号（7桁）から「都道府県＋市区町村＋町域」の候補を返す（郵便番号検索API zipcloud）。"""
+    payload = _get_json(f"{ZIPCLOUD_URL}?zipcode={urllib.parse.quote(code)}")
+    if not isinstance(payload, dict):
+        return []
+    results = []
+    for row in payload.get("results") or []:
+        text = f"{row.get('address1', '')}{row.get('address2', '')}{row.get('address3', '')}".strip()
+        if text and text not in results:
+            results.append(text)
+    return results
