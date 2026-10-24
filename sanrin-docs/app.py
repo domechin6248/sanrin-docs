@@ -45,10 +45,60 @@ def _empty_parcels() -> pd.DataFrame:
     return pd.DataFrame(columns=PARCEL_COLUMNS)
 
 
+def _query_fee() -> int:
+    """ハザード自動判定ツールから渡された引き取り費用。"""
+    raw = str(st.query_params.get("fee", "") or "").replace(",", "").strip()
+    raw = raw.translate(str.maketrans("０１２３４５６７８９", "0123456789"))
+    try:
+        value = int(raw)
+    except ValueError:
+        return 0
+    return value if value > 0 else 0
+
+
+def _query_lands() -> list[dict]:
+    """見積の対象地。land=所在|地番|地積 を繰り返す。"""
+    rows = []
+    for value in st.query_params.get_all("land"):
+        parts = str(value).split("|")
+        location = parts[0].strip() if parts else ""
+        chiban = parts[1].strip() if len(parts) > 1 else ""
+        area = parts[2].strip() if len(parts) > 2 else ""
+        if not location and not chiban:
+            continue
+        rows.append(
+            {
+                "土地所在地": location,
+                "地番": chiban,
+                "地目": "山林",
+                "地積": area,
+                "持分": "全部",
+            }
+        )
+    return rows
+
+
+def _apply_quote_query() -> None:
+    fee = _query_fee()
+    if fee and st.session_state.get("_fee_applied") != fee:
+        st.session_state.pickup_fee = fee
+        st.session_state._fee_applied = fee
+    elif "pickup_fee" not in st.session_state:
+        st.session_state.pickup_fee = 0
+
+    lands = _query_lands()
+    signature = tuple((row["土地所在地"], row["地番"], row["地積"]) for row in lands)
+    if lands and st.session_state.get("_lands_applied") != signature:
+        st.session_state.parcels = pd.DataFrame(lands)[PARCEL_COLUMNS]
+        st.session_state.editor_version += 1
+        st.session_state._lands_applied = signature
+
+
 if "parcels" not in st.session_state:
     st.session_state.parcels = _empty_parcels()
 if "editor_version" not in st.session_state:
     st.session_state.editor_version = 0
+_apply_quote_query()
 
 
 def _current_parcels() -> pd.DataFrame:
@@ -132,7 +182,11 @@ st.subheader("💴 金額・日付")
 today = dt.datetime.now(JST).date()
 c1, c2 = st.columns(2)
 with c1:
-    amount = st.number_input("お引き取り費用（税込・円） *", min_value=0, step=1000, value=0)
+    amount = st.number_input(
+        "お引き取り費用（税込・円） *", min_value=0, step=1000, key="pickup_fee",
+    )
+    if st.session_state.get("_fee_applied"):
+        st.caption("ハザード自動判定ツールの見積合計を入れています。金額はここで直せます。")
     created_on = st.date_input("案内文書の作成日", value=today, format="YYYY/MM/DD")
     invoice_no = st.text_input("請求番号", placeholder="空欄なら受付番号を使います")
 with c2:
@@ -238,6 +292,8 @@ if added:
             st.info("地番を複数追加しました。地積は下の一覧で1筆ずつ入力してください。")
 
 st.caption(f"選択中の所在：{location or '（未選択）'}")
+if st.session_state.get("_lands_applied"):
+    st.caption("見積の対象地を一覧に入れています。地目が違う筆は、表の中で直してください。")
 editor_key = f"parcel_editor_{st.session_state.editor_version}"
 edited = st.data_editor(
     st.session_state.parcels,
