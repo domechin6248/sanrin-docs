@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import io
 import re
+import unicodedata
 import zipfile
 from pathlib import Path
 from xml.sax.saxutils import escape
@@ -55,9 +56,36 @@ def _fill(xml: str, values: dict[str, str]) -> str:
     return _PLACEHOLDER_RE.sub(repl, xml)
 
 
+def _nfc(text: str) -> str:
+    return unicodedata.normalize("NFC", text)
+
+
+def find_template(template_name: str) -> Path:
+    """テンプレートのファイルを探す。
+
+    Mac からアップロードすると「ご」などの濁点が分かれた形（NFD）で保存されることがあるため、
+    表記を揃えて比較し、先頭の番号（01_ など）が同じファイルも候補にする。
+    """
+    exact = TEMPLATE_DIR / template_name
+    if exact.exists():
+        return exact
+    files = [f for f in TEMPLATE_DIR.glob("*.docx")] if TEMPLATE_DIR.exists() else []
+    for f in files:
+        if _nfc(f.name) == _nfc(template_name):
+            return f
+    prefix = template_name.split("_", 1)[0] + "_"
+    for f in files:
+        if f.name.startswith(prefix):
+            return f
+    found = "、".join(sorted(_nfc(f.name) for f in files)) or "（なし）"
+    raise FileNotFoundError(
+        f"テンプレート「{template_name}」が templates フォルダに見つかりません。見つかったファイル：{found}"
+    )
+
+
 def render(template_name: str, values: dict[str, str], parcel_count: int) -> bytes:
     """テンプレートに値を差し込んだ .docx をバイト列で返す。"""
-    source = TEMPLATE_DIR / template_name
+    source = find_template(template_name)
     out = io.BytesIO()
     with zipfile.ZipFile(source) as zin, zipfile.ZipFile(out, "w", zipfile.ZIP_DEFLATED) as zout:
         for item in zin.infolist():
@@ -76,7 +104,7 @@ def template_variables() -> dict[str, set[str]]:
     """各テンプレートで使っている変数名（確認用）。"""
     found: dict[str, set[str]] = {}
     for name in DOCUMENTS:
-        with zipfile.ZipFile(TEMPLATE_DIR / name) as z:
+        with zipfile.ZipFile(find_template(name)) as z:
             keys: set[str] = set()
             for item in z.namelist():
                 if item.startswith("word/") and item.endswith(".xml"):
