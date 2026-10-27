@@ -6,8 +6,11 @@
 
 from __future__ import annotations
 
+import csv
 import datetime as dt
 import io
+import urllib.error
+import urllib.request
 import zipfile
 
 import pandas as pd
@@ -114,6 +117,116 @@ def _add_parcels(rows: list[dict]) -> None:
     st.session_state.editor_version += 1
 
 
+# シート1だけをウェブ公開したCSV。設定シートは公開していない。
+_CUSTOMER_SHEET_CSV = (
+    "https://docs.google.com/spreadsheets/d/e/"
+    "2PACX-1vS9o-2jbZJWMWuP12v7NwhMohaucgYwJdEaFi1YpttAmXf8x6eYS5wNxACxvpOGcL-JYKUYydJb2Xk9/"
+    "pub?gid=0&single=true&output=csv"
+)
+_CUSTOMER_SHEET_EDIT = (
+    "https://docs.google.com/spreadsheets/d/1rWmzEHz3iDmMm8oNAVUew0o8OvEs8-uwaNfcaMh-O-0/edit?gid=0"
+)
+
+
+def _sheet_cell(row: dict, *names: str) -> str:
+    for name in names:
+        value = str(row.get(name, "") or "").strip()
+        if value and value.lower() != "nan":
+            return value
+    return ""
+
+
+def _format_postal(value: str) -> str:
+    digits = "".join(ch for ch in value if ch.isdigit())
+    digits = digits.translate(str.maketrans("０１２３４５６７８９", "0123456789"))
+    if len(digits) == 7:
+        return f"{digits[:3]}-{digits[3:]}"
+    return value.strip()
+
+
+def _join_address(base: str, detail: str) -> str:
+    base, detail = base.strip(), detail.strip()
+    if not detail or detail in base:
+        return base
+    return f"{base}{detail}" if base else detail
+
+
+def _customers_from_csv(text: str) -> list[dict]:
+    """申し込みシートの1行を、書類のお客様欄に入る形にする。"""
+    rows = list(csv.DictReader(io.StringIO(text.lstrip("\ufeff"))))
+    customers = []
+    used_labels: set[str] = set()
+    for index, row in enumerate(rows, start=1):
+        number = _sheet_cell(row, "お客様番号", "受付番号")
+        caller = _sheet_cell(row, "発信者のお名前", "発信者")
+        owner = _sheet_cell(row, "山林の名義", "名義")
+        name = owner or caller
+        furigana = _sheet_cell(row, "フリガナ", "お名前フリガナ", "発信者のフリガナ")
+        postal = _format_postal(_sheet_cell(row, "郵便番号"))
+        address = _join_address(
+            _sheet_cell(row, "住所", "ご住所"),
+            _sheet_cell(row, "番地・建物名・部屋番号", "番地"),
+        )
+        phone = _sheet_cell(row, "お電話番号", "電話番号") or _sheet_cell(row, "SMS用携帯番号")
+        email = _sheet_cell(row, "メールアドレス", "メール", "Eメール")
+        if not any((number, caller, owner, postal, address, phone, email)):
+            continue
+        label = f"{number}　{name}".strip("　") if number and name else (number or name or f"{index}行目")
+        if owner and caller and owner != caller:
+            label = f"{label}（発信 {caller}）"
+        status = _sheet_cell(row, "進捗状況")
+        if status:
+            label = f"{label}　{status}"
+        unique = label
+        suffix = 2
+        while unique in used_labels:
+            unique = f"{label}（{suffix}）"
+            suffix += 1
+        used_labels.add(unique)
+        customers.append(
+            {
+                "label": unique,
+                "receipt_no": number,
+                "name": name,
+                "furigana": furigana,
+                "postal": postal,
+                "address": address,
+                "phone": phone,
+                "email": email,
+            }
+        )
+    return customers
+
+
+@st.cache_data(ttl=60, show_spinner=False)
+def _load_customers() -> list[dict]:
+    request = urllib.request.Request(
+        _CUSTOMER_SHEET_CSV, headers={"User-Agent": "sanrin-docs/1.0"},
+    )
+    try:
+        with urllib.request.urlopen(request, timeout=20) as response:
+            text = response.read().decode("utf-8-sig")
+    except (urllib.error.URLError, TimeoutError) as exc:
+        raise RuntimeError("お客様の一覧を読み込めませんでした。") from exc
+    first = text.splitlines()[0] if text.splitlines() else ""
+    if "お客様番号" not in first and "受付番号" not in first:
+        raise RuntimeError("お客様の一覧を読み込めませんでした。")
+    return _customers_from_csv(text)
+
+
+def _apply_customer(row: dict) -> None:
+    """選んだ行を入力欄へ入れる。郵便番号の自動補完で番地を消さない。"""
+    st.session_state.receipt_no = row["receipt_no"]
+    st.session_state.customer_name = row["name"]
+    st.session_state.customer_furigana = row["furigana"]
+    st.session_state.postal = row["postal"]
+    st.session_state.customer_address = row["address"]
+    st.session_state.customer_phone = row["phone"]
+    st.session_state.customer_email = row["email"]
+    st.session_state.postal_autofill = ""
+    st.session_state.postal_message = ""
+
+
 def _fill_address_from_postal() -> None:
     """郵便番号から住所（町名まで）を調べて、ご住所の欄に入れる。"""
     code = "".join(ch for ch in st.session_state.get("postal", "") if ch.isdigit())
@@ -157,11 +270,42 @@ with st.expander("⚙️ 会社設定", expanded=not _secret("LINE_ID")):
 
 # --- お客様情報 ---
 st.subheader("👤 お客様情報")
+pick_col, refresh_col = st.columns([5, 1])
+with refresh_col:
+    if st.button("更新", help="スプレッドシートの最新の行を読み込みます。"):
+        _load_customers.clear()
+        st.rerun()
+customers: list[dict] = []
+customer_error = ""
+try:
+    customers = _load_customers()
+except RuntimeError:
+    customer_error = "お客様の一覧を読み込めませんでした。欄へ直接入力してください。"
+with pick_col:
+    if customer_error:
+        st.warning(customer_error)
+    elif not customers:
+        st.caption("スプレッドシートにまだお客様がありません。シート1に行を追加すると、ここに名前が出ます。")
+    else:
+        chosen = st.pills(
+            "お客様を選ぶ",
+            [row["label"] for row in customers],
+            selection_mode="single",
+            key="customer_pick",
+        )
+        if isinstance(chosen, list):
+            chosen = chosen[0] if chosen else None
+        picked = next((row for row in customers if row["label"] == chosen), None)
+        if picked and st.session_state.get("_customer_applied") != picked["label"]:
+            _apply_customer(picked)
+            st.session_state._customer_applied = picked["label"]
+        st.caption("名前を押すと、下の欄に入ります。入ったあとに手直しできます。")
+st.caption(f"一覧の元データ：[申し込み受付状況]({_CUSTOMER_SHEET_EDIT})")
 c1, c2 = st.columns(2)
-receipt_no = c1.text_input("受付番号 *", placeholder="0001")
+receipt_no = c1.text_input("受付番号 *", placeholder="0001", key="receipt_no")
 c1, c2 = st.columns(2)
-name = c1.text_input("お名前 *", placeholder="山田 太郎")
-furigana = c2.text_input("フリガナ", placeholder="ヤマダ タロウ")
+name = c1.text_input("お名前 *", placeholder="山田 太郎", key="customer_name")
+furigana = c2.text_input("フリガナ", placeholder="ヤマダ タロウ", key="customer_furigana")
 c1, c2 = st.columns([1, 2])
 postal = c1.text_input(
     "郵便番号", placeholder="895-0076", key="postal", on_change=_fill_address_from_postal,
@@ -174,8 +318,8 @@ customer_address = c2.text_input(
 if st.session_state.get("postal_message"):
     c2.caption(st.session_state.postal_message)
 c1, c2 = st.columns(2)
-phone = c1.text_input("電話番号", placeholder="090-1234-5678")
-email = c2.text_input("メールアドレス", placeholder="example@mail.com")
+phone = c1.text_input("電話番号", placeholder="090-1234-5678", key="customer_phone")
+email = c2.text_input("メールアドレス", placeholder="example@mail.com", key="customer_email")
 
 # --- 金額・日付 ---
 st.subheader("💴 金額・日付")
