@@ -81,6 +81,12 @@ def _query_lands() -> list[dict]:
     return rows
 
 
+def _query_receipt() -> str:
+    """ハザード自動判定ツールから渡された受付番号。空なら未入力。"""
+    raw = str(st.query_params.get("receipt", "") or "")
+    return raw.translate(str.maketrans("０１２３４５６７８９", "0123456789")).strip()
+
+
 def _apply_quote_query() -> None:
     fee = _query_fee()
     if fee and st.session_state.get("_fee_applied") != fee:
@@ -88,6 +94,12 @@ def _apply_quote_query() -> None:
         st.session_state._fee_applied = fee
     elif "pickup_fee" not in st.session_state:
         st.session_state.pickup_fee = 0
+
+    receipt = _query_receipt()
+    if receipt and st.session_state.get("_receipt_applied") != receipt:
+        st.session_state.receipt_no = receipt
+        st.session_state._receipt_applied = receipt
+        st.session_state._receipt_filled = None
 
     lands = _query_lands()
     signature = tuple((row["土地所在地"], row["地番"], row["地積"]) for row in lands)
@@ -214,6 +226,21 @@ def _load_customers() -> list[dict]:
     return _customers_from_csv(text)
 
 
+def _normalize_receipt(value: object) -> str:
+    return str(value or "").translate(str.maketrans("０１２３４５６７８９", "0123456789")).strip()
+
+
+def _same_receipt(left: object, right: object) -> bool:
+    left_text, right_text = _normalize_receipt(left), _normalize_receipt(right)
+    if not left_text or not right_text:
+        return False
+    if left_text == right_text:
+        return True
+    if left_text.isdigit() and right_text.isdigit():
+        return int(left_text) == int(right_text)
+    return False
+
+
 def _apply_customer(row: dict) -> None:
     """選んだ行を入力欄へ入れる。郵便番号の自動補完で番地を消さない。"""
     st.session_state.receipt_no = row["receipt_no"]
@@ -225,6 +252,51 @@ def _apply_customer(row: dict) -> None:
     st.session_state.customer_email = row["email"]
     st.session_state.postal_autofill = ""
     st.session_state.postal_message = ""
+
+
+def _customer_for_receipt(number: str, customers: list[dict]) -> dict | None:
+    matches = [row for row in customers if _same_receipt(row["receipt_no"], number)]
+    if len(matches) == 1:
+        return matches[0]
+    return None
+
+
+def _mark_customer(row: dict) -> None:
+    st.session_state._customer_applied = row["label"]
+    st.session_state.customer_pick = row["label"]
+    st.session_state._receipt_filled = _normalize_receipt(row["receipt_no"])
+    st.session_state._receipt_matched = True
+
+
+def _sync_customer_from_receipt(customers: list[dict]) -> None:
+    """受付番号が変わったら、同じ番号のお客様を欄へ入れる。"""
+    number = _normalize_receipt(st.session_state.get("receipt_no", ""))
+    if st.session_state.get("_receipt_filled") == number:
+        return
+    row = _customer_for_receipt(number, customers) if number else None
+    if row:
+        _apply_customer(row)
+        _mark_customer(row)
+        return
+    st.session_state._receipt_filled = number
+    st.session_state._receipt_matched = False
+
+
+def _on_customer_pick() -> None:
+    chosen = st.session_state.get("customer_pick")
+    if isinstance(chosen, list):
+        chosen = chosen[0] if chosen else None
+    if not chosen:
+        return
+    try:
+        customers = _load_customers()
+    except RuntimeError:
+        return
+    picked = next((row for row in customers if row["label"] == chosen), None)
+    if not picked or st.session_state.get("_customer_applied") == picked["label"]:
+        return
+    _apply_customer(picked)
+    _mark_customer(picked)
 
 
 def _fill_address_from_postal() -> None:
@@ -270,39 +342,44 @@ with st.expander("⚙️ 会社設定", expanded=not _secret("LINE_ID")):
 
 # --- お客様情報 ---
 st.subheader("👤 お客様情報")
-pick_col, refresh_col = st.columns([5, 1])
-with refresh_col:
-    if st.button("更新", help="スプレッドシートの最新の行を読み込みます。"):
-        _load_customers.clear()
-        st.rerun()
 customers: list[dict] = []
 customer_error = ""
 try:
     customers = _load_customers()
 except RuntimeError:
     customer_error = "お客様の一覧を読み込めませんでした。欄へ直接入力してください。"
+_sync_customer_from_receipt(customers)
+receipt_no = st.text_input(
+    "受付番号（任意）",
+    placeholder="0001",
+    key="receipt_no",
+    help="番号を入れると、申し込みシートに同じお客様がいれば名前や住所も入ります。空欄でも書類を作れます。",
+)
+if st.session_state.get("_receipt_matched"):
+    st.caption("この受付番号のお客様を入れています。内容はここで直せます。")
+elif st.session_state.get("_receipt_applied") and receipt_no.strip():
+    st.caption("ハザード自動判定ツールの受付番号を入れています。")
+pick_col, refresh_col = st.columns([5, 1])
+with refresh_col:
+    if st.button("更新", help="スプレッドシートの最新の行を読み込みます。"):
+        _load_customers.clear()
+        st.session_state._receipt_filled = None
+        st.rerun()
 with pick_col:
     if customer_error:
         st.warning(customer_error)
     elif not customers:
         st.caption("スプレッドシートにまだお客様がありません。シート1に行を追加すると、ここに名前が出ます。")
     else:
-        chosen = st.pills(
+        st.pills(
             "お客様を選ぶ",
             [row["label"] for row in customers],
             selection_mode="single",
             key="customer_pick",
+            on_change=_on_customer_pick,
         )
-        if isinstance(chosen, list):
-            chosen = chosen[0] if chosen else None
-        picked = next((row for row in customers if row["label"] == chosen), None)
-        if picked and st.session_state.get("_customer_applied") != picked["label"]:
-            _apply_customer(picked)
-            st.session_state._customer_applied = picked["label"]
         st.caption("名前を押すと、下の欄に入ります。入ったあとに手直しできます。")
 st.caption(f"一覧の元データ：[申し込み受付状況]({_CUSTOMER_SHEET_EDIT})")
-c1, c2 = st.columns(2)
-receipt_no = c1.text_input("受付番号 *", placeholder="0001", key="receipt_no")
 c1, c2 = st.columns(2)
 name = c1.text_input("お名前 *", placeholder="山田 太郎", key="customer_name")
 furigana = c2.text_input("フリガナ", placeholder="ヤマダ タロウ", key="customer_furigana")
@@ -473,7 +550,7 @@ selected = [
     if st.checkbox(title, value=True, key=f"doc_{file}")
 ]
 
-missing = [label for label, value in (("受付番号", receipt_no), ("お名前", name)) if not value.strip()]
+missing = ["お名前"] if not name.strip() else []
 if amount <= 0:
     missing.append("お引き取り費用")
 if parcels.empty:
