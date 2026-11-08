@@ -163,6 +163,17 @@ def _join_address(base: str, detail: str) -> str:
     return f"{base}{detail}" if base else detail
 
 
+def _note_field(notes: str, label: str) -> str:
+    """備考の「フリガナ: ヤマダ」のような表記から、その値だけを取り出す。"""
+    for part in notes.split("/"):
+        text = part.strip().lstrip("'")
+        for sep in (":", "："):
+            prefix = f"{label}{sep}"
+            if text.startswith(prefix):
+                return text[len(prefix):].strip()
+    return ""
+
+
 def _customers_from_csv(text: str) -> list[dict]:
     """申し込みシートの1行を、書類のお客様欄に入る形にする。"""
     rows = list(csv.DictReader(io.StringIO(text.lstrip("\ufeff"))))
@@ -181,6 +192,13 @@ def _customers_from_csv(text: str) -> list[dict]:
         )
         phone = _sheet_cell(row, "お電話番号", "電話番号") or _sheet_cell(row, "SMS用携帯番号")
         email = _sheet_cell(row, "メールアドレス", "メール", "Eメール")
+        notes = _sheet_cell(row, "備考・特記事項", "備考")
+        if not furigana:
+            furigana = _note_field(notes, "フリガナ")
+        if not email:
+            email = _note_field(notes, "メールアドレス") or _note_field(notes, "メール")
+        if email.startswith("なし") or "記入なし" in email:
+            email = ""
         if not any((number, caller, owner, postal, address, phone, email)):
             continue
         label = f"{number}　{name}".strip("　") if number and name else (number or name or f"{index}行目")
