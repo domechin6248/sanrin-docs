@@ -129,14 +129,14 @@ def _add_parcels(rows: list[dict]) -> None:
     st.session_state.editor_version += 1
 
 
-# シート1だけをウェブ公開したCSV。設定シートは公開していない。
+# 顧客マスタのシート1だけをウェブ公開したCSV。ほかのシートは公開していない。
 _CUSTOMER_SHEET_CSV = (
     "https://docs.google.com/spreadsheets/d/e/"
-    "2PACX-1vS9o-2jbZJWMWuP12v7NwhMohaucgYwJdEaFi1YpttAmXf8x6eYS5wNxACxvpOGcL-JYKUYydJb2Xk9/"
+    "2PACX-1vRvQEEgZt2dUG4peTgxNh1UEFPGVDWdfoKmXvSlP2SluKgy_0cAUHhyO4QXt0Fl4UUu0t6xfyKvELMU/"
     "pub?gid=0&single=true&output=csv"
 )
 _CUSTOMER_SHEET_EDIT = (
-    "https://docs.google.com/spreadsheets/d/1rWmzEHz3iDmMm8oNAVUew0o8OvEs8-uwaNfcaMh-O-0/edit?gid=0"
+    "https://docs.google.com/spreadsheets/d/1JpWsr7SoP7Tiq2ftsIgVlhP0RoddgaQgRsRgHN9iIh4/edit?gid=0"
 )
 
 
@@ -186,7 +186,7 @@ def _customers_from_csv(text: str) -> list[dict]:
         label = f"{number}　{name}".strip("　") if number and name else (number or name or f"{index}行目")
         if owner and caller and owner != caller:
             label = f"{label}（発信 {caller}）"
-        status = _sheet_cell(row, "進捗状況")
+        status = _sheet_cell(row, "進捗状況", "対応状況")
         if status:
             label = f"{label}　{status}"
         unique = label
@@ -332,11 +332,12 @@ def _fill_address_from_postal() -> None:
 st.title("📄 山林お引き取り 書類作成ツール")
 st.write("お客様情報・金額・土地を入力すると、各書類を差し込み済みの Word ファイルで作成します。")
 
-with st.expander("⚙️ 会社設定", expanded=not _secret("LINE_ID")):
+line_default = _secret("LINE_ID") or "@sanrinpartners"
+with st.expander("⚙️ 会社設定", expanded=not line_default):
     line_id = st.text_input(
         "公式LINE ID",
-        value=_secret("LINE_ID"),
-        placeholder="@sanrin-partners",
+        value=line_default,
+        placeholder="@sanrinpartners",
         help="毎回入力しなくて済むように、Streamlit の Secrets に LINE_ID として登録できます。",
     )
 
@@ -379,7 +380,7 @@ with pick_col:
             on_change=_on_customer_pick,
         )
         st.caption("名前を押すと、下の欄に入ります。入ったあとに手直しできます。")
-st.caption(f"一覧の元データ：[申し込み受付状況]({_CUSTOMER_SHEET_EDIT})")
+st.caption(f"一覧の元データ：[顧客マスタ]({_CUSTOMER_SHEET_EDIT})")
 c1, c2 = st.columns(2)
 name = c1.text_input("お名前 *", placeholder="山田 太郎", key="customer_name")
 furigana = c2.text_input("フリガナ", placeholder="ヤマダ タロウ", key="customer_furigana")
