@@ -566,7 +566,7 @@ if len(farm):
 st.subheader("🖨️ 書類を作成")
 selected = [
     file for file, title in docgen.DOCUMENTS.items()
-    if st.checkbox(title, value=file not in docgen.OPTIONAL, key=f"doc_{file}")
+    if st.checkbox(title, value=file not in getattr(docgen, "OPTIONAL", set()), key=f"doc_{file}")
 ]
 
 missing = ["お名前"] if not name.strip() else []
