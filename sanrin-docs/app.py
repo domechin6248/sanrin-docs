@@ -1,4 +1,4 @@
-"""山林お引き取り 書類作成ツール
+"""不動産お引き取り 書類作成ツール
 
 お客様情報・金額・土地を1回入力すると、同意書・案内文書・契約書・請求書を
 差し込み済みの Word ファイルとしてまとめて作成します。
@@ -182,7 +182,7 @@ def _customers_from_csv(text: str) -> list[dict]:
     for index, row in enumerate(rows, start=1):
         number = _sheet_cell(row, "お客様番号", "受付番号")
         caller = _sheet_cell(row, "発信者のお名前", "発信者")
-        owner = _sheet_cell(row, "山林の名義", "名義")
+        owner = _sheet_cell(row, "山林の名義", "不動産の名義", "名義")
         name = owner or caller
         furigana = _sheet_cell(row, "フリガナ", "お名前フリガナ", "発信者のフリガナ")
         postal = _format_postal(_sheet_cell(row, "郵便番号"))
@@ -347,7 +347,7 @@ def _fill_address_from_postal() -> None:
 
 
 # ─────────────────────────────── 画面 ───────────────────────────────
-st.title("📄 山林お引き取り 書類作成ツール")
+st.title("📄 不動産お引き取り 書類作成ツール")
 st.write("お客様情報・金額・土地を入力すると、各書類を差し込み済みの Word ファイルで作成します。")
 
 line_default = _secret("LINE_ID") or "@sanrinpartners"
