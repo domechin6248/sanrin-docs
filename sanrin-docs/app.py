@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import csv
 import datetime as dt
+import importlib
 import io
 import urllib.error
 import urllib.request
@@ -18,6 +19,9 @@ import streamlit as st
 
 import address
 import docgen
+
+# docgen.py（書類の一覧）を更新したとき、起動中のアプリにもすぐ反映されるように読み込み直す
+importlib.reload(docgen)
 
 st.set_page_config(page_title="書類作成ツール", page_icon="📄", layout="centered")
 
