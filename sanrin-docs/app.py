@@ -101,6 +101,17 @@ def _query_items() -> list[tuple[str, int]]:
     return items
 
 
+def _query_risk() -> tuple[str, int]:
+    """見積のリスク引き受け料（警戒区域）。risk=対象の筆と区分|金額。"""
+    raw = str(st.query_params.get("risk", "") or "")
+    detail, _sep, money = raw.rpartition("|")
+    try:
+        value = int(money.replace(",", "").strip())
+    except ValueError:
+        return "", 0
+    return (detail.strip(), value) if value > 0 else ("", 0)
+
+
 def _query_receipt() -> str:
     """ハザード自動判定ツールから渡された受付番号。空なら未入力。"""
     raw = str(st.query_params.get("receipt", "") or "")
@@ -125,6 +136,11 @@ def _apply_quote_query() -> None:
     if items and st.session_state.get("_items_applied") != items:
         st.session_state.quote_items = items
         st.session_state._items_applied = items
+
+    risk = _query_risk()
+    if st.session_state.get("_risk_applied") != risk:
+        st.session_state.quote_risk = risk
+        st.session_state._risk_applied = risk
 
     lands = _query_lands()
     signature = tuple((row["土地所在地"], row["地番"], row["地積"], row["固定資産税"]) for row in lands)
@@ -631,11 +647,15 @@ if st.button("📄 書類を作成する", type="primary", disabled=not selected
 
     # 見積書の内訳。ハザード自動判定ツールの内訳が、今の金額と合うときだけ使う。
     quote_items = list(st.session_state.get("quote_items") or [])
-    if not quote_items or sum(money for _label, money in quote_items) != int(amount):
+    risk_detail, risk_amount = st.session_state.get("quote_risk") or ("", 0)
+    if not quote_items and not risk_amount or sum(m for _l, m in quote_items) + risk_amount != int(amount):
         quote_items = [("お引き取り費用（税込）", int(amount))] if amount else []
+        risk_detail, risk_amount = "", 0
     for i, (label, money) in enumerate(quote_items, start=1):
         values[f"明細項目{i}"] = label
         values[f"明細金額{i}"] = f"{money:,}円"
+    values["リスク内訳"] = f"：{risk_detail}" if risk_amount else "：該当なし"
+    values["リスク金額"] = f"{risk_amount:,}円"
     values["見積期限"] = reiwa_text(created_on + dt.timedelta(days=30))
 
     prefix = "_".join(x for x in (receipt_no.strip(), name.strip().replace(" ", "").replace("　", "")) if x)
