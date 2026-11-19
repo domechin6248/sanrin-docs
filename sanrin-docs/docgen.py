@@ -17,6 +17,7 @@ TEMPLATE_DIR = Path(__file__).parent / "templates"
 
 # 作成する書類（テンプレートのファイル名 → 表示名）
 DOCUMENTS = {
+    "11_見積書.docx": "見積書（ハザード自動判定ツールの見積から作る）",
     "01_同意書.docx": "同意書（兼お申込み書）",
     "06_物件状況等告知書.docx": "物件状況等告知書（兼 誓約書）",
     "02_見積書送付のご案内.docx": "見積書送付のご案内",
@@ -34,26 +35,33 @@ OPTIONAL = {"08_前提登記のご案内.docx"}
 
 _ROW_RE = re.compile(r"<w:tr[ >].*?</w:tr>", re.S)
 _PLACEHOLDER_RE = re.compile(r"\{\{([^{}]+)\}\}")
-_PARCEL_KEYS = ("土地所在地", "地番", "地目", "地積", "持分")
+_PARCEL_KEYS = ("土地所在地", "地番", "地目", "地積", "持分", "固定資産税")
+_ITEM_KEYS = ("明細項目", "明細金額")
+
+
+def _expand_rows(xml: str, marker: str, keys: tuple[str, ...], count: int, numbered: bool) -> str:
+    """見本行（変数名に 1 が付いた行）を、件数に合わせて増やす。"""
+    rows = [m for m in _ROW_RE.finditer(xml) if marker in m.group(0)]
+    if not rows:
+        return xml
+    proto = rows[0].group(0)
+    total = max(count, len(rows))
+    new_rows = []
+    for index in range(1, total + 1):
+        row = proto
+        for key in keys:
+            row = row.replace(f"{{{{{key}1}}}}", f"{{{{{key}{index}}}}}")
+        if numbered:
+            # 「No.」欄の番号（見本行の 1）を差し替える
+            row = re.sub(r"(<w:t(?: [^>]*)?>)1(</w:t>)", rf"\g<1>{index}\g<2>", row, count=1)
+        new_rows.append(row)
+    start, end = rows[0].start(), rows[-1].end()
+    return xml[:start] + "".join(new_rows) + xml[end:]
 
 
 def _expand_parcel_rows(xml: str, parcel_count: int) -> str:
     """土地の表の行を、筆の数に合わせて増やす。"""
-    rows = [m for m in _ROW_RE.finditer(xml) if "{{土地所在地" in m.group(0)]
-    if not rows:
-        return xml
-    proto = rows[0].group(0)
-    total = max(parcel_count, len(rows))
-    new_rows = []
-    for index in range(1, total + 1):
-        row = proto
-        for key in _PARCEL_KEYS:
-            row = row.replace(f"{{{{{key}1}}}}", f"{{{{{key}{index}}}}}")
-        # 「No.」欄の番号（見本行の 1）を差し替える
-        row = re.sub(r"(<w:t(?: [^>]*)?>)1(</w:t>)", rf"\g<1>{index}\g<2>", row, count=1)
-        new_rows.append(row)
-    start, end = rows[0].start(), rows[-1].end()
-    return xml[:start] + "".join(new_rows) + xml[end:]
+    return _expand_rows(xml, "{{土地所在地", _PARCEL_KEYS, parcel_count, True)
 
 
 def _fill(xml: str, values: dict[str, str]) -> str:
@@ -91,7 +99,7 @@ def find_template(template_name: str) -> Path:
     )
 
 
-def render(template_name: str, values: dict[str, str], parcel_count: int) -> bytes:
+def render(template_name: str, values: dict[str, str], parcel_count: int, item_count: int = 1) -> bytes:
     """テンプレートに値を差し込んだ .docx をバイト列で返す。"""
     source = find_template(template_name)
     out = io.BytesIO()
@@ -102,6 +110,7 @@ def render(template_name: str, values: dict[str, str], parcel_count: int) -> byt
                 xml = data.decode("utf-8")
                 if "{{" in xml:
                     xml = _expand_parcel_rows(xml, parcel_count)
+                    xml = _expand_rows(xml, "{{明細項目", _ITEM_KEYS, item_count, False)
                     xml = _fill(xml, values)
                 data = xml.encode("utf-8")
             zout.writestr(item, data)

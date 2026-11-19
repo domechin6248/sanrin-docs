@@ -28,7 +28,7 @@ st.set_page_config(page_title="書類作成ツール", page_icon="📄", layout=
 JST = dt.timezone(dt.timedelta(hours=9))
 CHIMOKU = ["山林", "保安林", "原野", "雑種地", "宅地", "公衆用道路", "池沼", "田", "畑", "その他"]
 FARMLAND = {"田", "畑"}
-PARCEL_COLUMNS = ["土地所在地", "地番", "地目", "地積", "持分"]
+PARCEL_COLUMNS = ["土地所在地", "地番", "地目", "地積", "持分", "固定資産税"]
 
 
 def _secret(key: str, default: str = "") -> str:
@@ -64,13 +64,14 @@ def _query_fee() -> int:
 
 
 def _query_lands() -> list[dict]:
-    """見積の対象地。land=所在|地番|地積 を繰り返す。"""
+    """見積の対象地。land=所在|地番|地積|固定資産税額 を繰り返す。"""
     rows = []
     for value in st.query_params.get_all("land"):
         parts = str(value).split("|")
         location = parts[0].strip() if parts else ""
         chiban = parts[1].strip() if len(parts) > 1 else ""
         area = parts[2].strip() if len(parts) > 2 else ""
+        tax = parts[3].strip() if len(parts) > 3 else ""
         if not location and not chiban:
             continue
         rows.append(
@@ -80,9 +81,24 @@ def _query_lands() -> list[dict]:
                 "地目": "山林",
                 "地積": area,
                 "持分": "全部",
+                "固定資産税": tax,
             }
         )
     return rows
+
+
+def _query_items() -> list[tuple[str, int]]:
+    """見積の内訳。item=項目名|金額 を繰り返す。"""
+    items = []
+    for value in st.query_params.get_all("item"):
+        label, _sep, raw = str(value).rpartition("|")
+        try:
+            money = int(raw.replace(",", "").strip())
+        except ValueError:
+            continue
+        if label.strip() and money > 0:
+            items.append((label.strip(), money))
+    return items
 
 
 def _query_receipt() -> str:
@@ -105,8 +121,13 @@ def _apply_quote_query() -> None:
         st.session_state._receipt_applied = receipt
         st.session_state._receipt_filled = None
 
+    items = _query_items()
+    if items and st.session_state.get("_items_applied") != items:
+        st.session_state.quote_items = items
+        st.session_state._items_applied = items
+
     lands = _query_lands()
-    signature = tuple((row["土地所在地"], row["地番"], row["地積"]) for row in lands)
+    signature = tuple((row["土地所在地"], row["地番"], row["地積"], row["固定資産税"]) for row in lands)
     if lands and st.session_state.get("_lands_applied") != signature:
         st.session_state.parcels = pd.DataFrame(lands)[PARCEL_COLUMNS]
         st.session_state.editor_version += 1
@@ -529,7 +550,7 @@ if added:
     else:
         _add_parcels([
             {"土地所在地": full_location, "地番": n, "地目": chimoku,
-             "地積": chiseki if len(numbers) == 1 else "", "持分": share or "全部"}
+             "地積": chiseki if len(numbers) == 1 else "", "持分": share or "全部", "固定資産税": ""}
             for n in numbers
         ])
         if len(numbers) > 1:
@@ -551,6 +572,7 @@ edited = st.data_editor(
         "地目": st.column_config.SelectboxColumn("地目", options=CHIMOKU),
         "地積": st.column_config.TextColumn("地積（㎡）"),
         "持分": st.column_config.TextColumn("甲の持分"),
+        "固定資産税": st.column_config.TextColumn("固定資産税（年・円）", help="見積書に載ります。"),
     },
 )
 st.session_state[f"{editor_key}_value"] = edited
@@ -603,12 +625,24 @@ if st.button("📄 書類を作成する", type="primary", disabled=not selected
     for i, row in enumerate(parcels.to_dict("records"), start=1):
         for key in docgen._PARCEL_KEYS:
             values[f"{key}{i}"] = str(row.get(key, "")).strip()
+        tax_digits = values[f"固定資産税{i}"].replace(",", "").replace("円", "").strip()
+        if tax_digits.isdigit():
+            values[f"固定資産税{i}"] = f"{int(tax_digits):,}円"
+
+    # 見積書の内訳。ハザード自動判定ツールの内訳が、今の金額と合うときだけ使う。
+    quote_items = list(st.session_state.get("quote_items") or [])
+    if not quote_items or sum(money for _label, money in quote_items) != int(amount):
+        quote_items = [("お引き取り費用（税込）", int(amount))] if amount else []
+    for i, (label, money) in enumerate(quote_items, start=1):
+        values[f"明細項目{i}"] = label
+        values[f"明細金額{i}"] = f"{money:,}円"
+    values["見積期限"] = reiwa_text(created_on + dt.timedelta(days=30))
 
     prefix = "_".join(x for x in (receipt_no.strip(), name.strip().replace(" ", "").replace("　", "")) if x)
     files = {}
     for file in selected:
         out_name = f"{prefix}_{file[3:]}" if prefix else file[3:]
-        files[out_name] = docgen.render(file, values, len(parcels))
+        files[out_name] = docgen.render(file, values, len(parcels), len(quote_items))
     st.session_state.generated = files
 
 files = st.session_state.get("generated")
